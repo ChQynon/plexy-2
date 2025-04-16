@@ -1,45 +1,26 @@
 // Этот файл нужен для Vercel - он служит точкой входа для вебхука
-const { Telegraf, Scenes, session, Markup } = require('telegraf');
+const path = require('path');
 const dotenv = require('dotenv');
-const axios = require('axios');
-const express = require('express');
+const { existsSync, mkdirSync } = require('fs');
 
-// Load environment variables
+// Загрузка переменных окружения
 dotenv.config();
 
-// Initialize bot
-const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+// Создание временной директории, если она не существует
+const tempDir = path.join(__dirname, '../temp');
+if (!existsSync(tempDir)) {
+  mkdirSync(tempDir, { recursive: true });
+}
 
-// Create Express app
-const app = express();
+// Установка переменных окружения для вебхука
+process.env.NODE_ENV = 'production';
+process.env.WEBHOOK_URL = 'https://plexy-2.vercel.app/api/webhook';
 
-// Настройка бота
-bot.start((ctx) => ctx.reply('Привет! Отправь мне фото растения, и я скажу что это.'));
-bot.help((ctx) => ctx.reply('Отправь мне фото растения, и я помогу с идентификацией'));
-bot.on('photo', (ctx) => ctx.reply('Анализирую изображение...'));
-bot.on('text', (ctx) => ctx.reply('Отправь мне фото растения для анализа'));
+// Импортируем TypeScript исходный код с помощью ts-node
+require('ts-node/register');
 
-// Webhook route for Telegram
-app.use(bot.webhookCallback('/api/webhook'));
+// Импортируем основной файл бота
+const app = require('../src/index.ts');
 
-// Health check route
-app.get('/api/health', (req, res) => {
-  res.status(200).send('OK');
-});
-
-// Root route
-app.get('/', (req, res) => {
-  res.status(200).send('Telegram Bot is running.');
-});
-
-// Set webhook
-bot.telegram.setWebhook(`https://plexy-2.vercel.app/api/webhook`)
-  .then(() => {
-    console.log('Webhook set');
-  })
-  .catch(err => {
-    console.error('Error setting webhook:', err);
-  });
-
-// Export express app for Vercel
+// Экспортируем приложение для Vercel
 module.exports = app; 
