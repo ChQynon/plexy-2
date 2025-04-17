@@ -75,60 +75,36 @@ function getUserState(userId: number): UserState {
 // Gemini API call function
 async function callGeminiAPI(userState: UserState, systemPrompt: string, userPrompt: string | any[], addToHistory: boolean = true): Promise<string> {
   try {
-    const GEMINI_API_KEY = "AIzaSyA3WOrYYhw6FnePJX3EANcmwH6OvkZW9IE";
+    const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "AIzaSyA3WOrYYhw6FnePJX3EANcmwH6OvkZW9IE";
     
-    // Prepare conversation history with system prompt as context
-    const messages = [];
+    // Import the GoogleGenAI library
+    const { GoogleGenAI } = require('@google/genai');
     
-    // Add system prompt as user context
-    messages.push({
-      role: "user",
-      parts: [{ text: `Инструкции для тебя: ${systemPrompt}. Отвечай по-русски, без представлений и упоминаний, что ты PLEXY от Plexy Lab. Просто давай информацию без вступлений.` }]
+    // Initialize the API client
+    const genAI = new GoogleGenAI(GEMINI_API_KEY);
+    
+    // Create a conversation
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-thinking-exp-01-21" });
+    
+    // Prepare the prompt
+    const prompt = `Инструкции для тебя: ${systemPrompt}. Отвечай по-русски, без представлений и упоминаний, что ты PLEXY от Plexy Lab. Просто давай информацию без вступлений.`;
+    
+    // Prepare the chat
+    const chat = model.startChat({
+      history: userState.conversationHistory.map(msg => ({
+        role: msg.role,
+        parts: [{ text: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content) }]
+      })).slice(-5)
     });
     
-    // Add conversation history (up to 5 last messages)
-    if (userState.conversationHistory.length > 0) {
-      const recentHistory = userState.conversationHistory.slice(-5);
-      for (const msg of recentHistory) {
-        messages.push({
-          role: msg.role,
-          parts: Array.isArray(msg.content) 
-            ? msg.content 
-            : [{ text: msg.content }]
-        });
-      }
-    }
-    
-    // Add current user prompt
-    const userMessage = {
-      role: "user",
-      parts: Array.isArray(userPrompt) 
-        ? userPrompt 
-        : [{ text: userPrompt }]
-    };
-    messages.push(userMessage);
-    
-    // API request
-    const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        contents: messages,
-        generationConfig: {
-          temperature: 0.7,
-          topK: 40,
-          topP: 0.95,
-          maxOutputTokens: 2048,
-        },
-      }
+    // Generate content
+    const result = await chat.sendMessage(Array.isArray(userPrompt) 
+      ? [{ text: prompt }, ...userPrompt]
+      : [{ text: prompt }, { text: userPrompt }]
     );
     
-    // Process response
-    let content = '';
-    if (response.data.candidates && response.data.candidates[0] && response.data.candidates[0].content) {
-      content = response.data.candidates[0].content.parts[0].text;
-    } else {
-      throw new Error('Invalid response from Gemini API');
-    }
+    // Extract the response text
+    let content = result.response.text();
     
     // Add to conversation history if required
     if (addToHistory) {
@@ -642,51 +618,48 @@ bot.on('photo', async (ctx) => {
     
     // Call Gemini API for image analysis
     try {
-      const GEMINI_API_KEY = "AIzaSyA3WOrYYhw6FnePJX3EANcmwH6OvkZW9IE";
+      const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "AIzaSyA3WOrYYhw6FnePJX3EANcmwH6OvkZW9IE";
       
-      // API request with image
-      const response = await axios.post(
-        `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      // Import required libraries
+      const { GoogleGenAI } = require('@google/genai');
+      const mime = require('mime');
+      
+      // Initialize the API client
+      const genAI = new GoogleGenAI(GEMINI_API_KEY);
+      
+      // Get the generative model
+      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-thinking-exp-01-21" });
+      
+      // Create the prompt parts with the image
+      const imageParts = [
         {
-          contents: [
-            {
-              role: "user",
-              parts: [
-                {
-                  text: `Инструкции для тебя: ${systemPrompt}. Отвечай по-русски, без вступлений, приветствий и представлений. Давай содержательную информацию сразу. Четко укажи научное и обиходное название растения в начале ответа.`
-                }
-              ]
-            },
-            {
-              role: "user",
-              parts: [
-                {
-                  text: caption || 'Определи это растение и расскажи о нем'
-                },
-                {
-                  inline_data: {
-                    mime_type: "image/jpeg",
-                    data: base64Image
-                  }
-                }
-              ]
-            }
-          ],
-          generationConfig: {
-            temperature: 0.4,
-            topK: 32,
-            topP: 0.95,
-            maxOutputTokens: 2048,
-          },
+          text: `Инструкции для тебя: ${systemPrompt}. Отвечай по-русски, без вступлений, приветствий и представлений. Давай содержательную информацию сразу. Четко укажи научное и обиходное название растения в начале ответа.`
+        },
+        {
+          text: caption || 'Определи это растение и расскажи о нем'
+        },
+        {
+          inlineData: {
+            mimeType: "image/jpeg",
+            data: base64Image
+          }
         }
-      );
+      ];
       
-      let content = '';
-      if (response.data.candidates && response.data.candidates[0] && response.data.candidates[0].content) {
-        content = response.data.candidates[0].content.parts[0].text;
-      } else {
-        throw new Error('Invalid response from Gemini API');
-      }
+      // Generate content
+      const result = await model.generateContent({
+        contents: [{ role: "user", parts: imageParts }],
+        generationConfig: {
+          temperature: 0.4,
+          topK: 32,
+          topP: 0.95,
+          maxOutputTokens: 2048,
+        }
+      });
+      
+      // Get the response
+      const response = result.response;
+      let content = response.text();
       
       // Clean up the content first to remove formatting that might interfere with extraction
       let cleanContent = content
