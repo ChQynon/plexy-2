@@ -3,13 +3,20 @@ const { Telegraf } = require('telegraf');
 const dotenv = require('dotenv');
 const express = require('express');
 const axios = require('axios');
+const { GoogleGenAI } = require('@google/genai');
+const mime = require('mime');
 
 // Загрузка переменных окружения
 dotenv.config();
 
+// Инициализация Gemini API
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "AIzaSyA3WOrYYhw6FnePJX3EANcmwH6OvkZW9IE";
+const genAI = new GoogleGenAI({
+  apiKey: GEMINI_API_KEY,
+});
+
 // Инициализация бота
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "AIzaSyA3WOrYYhw6FnePJX3EANcmwH6OvkZW9IE";
 
 // Создание Express приложения
 const app = express();
@@ -43,7 +50,8 @@ const mainMenuKeyboard = () => {
     keyboard: [
       ['🌱 Определить растение', '🔍 Проблема с растением'],
       ['💊 Витамины и питание', '❓ Задать вопрос'],
-      ['ℹ️ Помощь', '📝 Оставить отзыв']
+      ['ℹ️ Помощь', '📝 Оставить отзыв'],
+      ['👨‍💻 Создатели']
     ],
     resize_keyboard: true
   };
@@ -76,35 +84,63 @@ const createPlantActionKeyboard = () => {
 // Функция для вызова Gemini API
 async function callGeminiAPI(userState, systemPrompt, userPrompt) {
   try {
-    // API запрос
-    const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: `Инструкции для тебя: ${systemPrompt}. Отвечай по-русски, без представлений и приветствий.` }]
-          },
-          {
-            role: "user",
-            parts: Array.isArray(userPrompt) 
-              ? userPrompt 
-              : [{ text: userPrompt }]
-          }
-        ],
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 2048,
-        },
+    // Настройки модели
+    const model = genAI.getGenerativeModel({
+      model: "gemini-2.0-flash-thinking-exp-01-21",
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: 2048,
+        responseMimeType: 'text/plain',
       }
-    );
+    });
     
-    // Обработка ответа
-    let content = '';
-    if (response.data.candidates && response.data.candidates[0] && response.data.candidates[0].content) {
-      content = response.data.candidates[0].content.parts[0].text;
-    } else {
-      throw new Error('Invalid response from Gemini API');
+    // Подготовка системного промпта
+    const systemMessage = {
+      role: 'user',
+      parts: [{ text: `Инструкции для тебя: ${systemPrompt}. Отвечай по-русски, без представлений и приветствий.` }]
+    };
+    
+    // Подготовка истории чата
+    const chatHistory = [];
+    if (userState.conversationHistory && userState.conversationHistory.length > 0) {
+      const recentHistory = userState.conversationHistory.slice(-5);
+      for (const msg of recentHistory) {
+        chatHistory.push({
+          role: msg.role,
+          parts: Array.isArray(msg.content) ? msg.content : [{ text: msg.content }]
+        });
+      }
+    }
+    
+    // Подготовка пользовательского сообщения
+    const userMessage = {
+      role: 'user',
+      parts: Array.isArray(userPrompt) ? userPrompt : [{ text: userPrompt }]
+    };
+    
+    // Объединение сообщений
+    const messages = [systemMessage, ...chatHistory, userMessage];
+    
+    // Вызов API
+    const result = await model.generateContent(messages);
+    let content = result.response.text();
+    
+    // Добавление в историю чата
+    if (typeof userPrompt === 'string') {
+      userState.conversationHistory.push({
+        role: 'user',
+        content: userPrompt
+      });
+    }
+    
+    userState.conversationHistory.push({
+      role: 'model',
+      content: content
+    });
+    
+    // Ограничение длины истории
+    if (userState.conversationHistory.length > 10) {
+      userState.conversationHistory = userState.conversationHistory.slice(-10);
     }
     
     // Обработка форматирования
@@ -120,6 +156,7 @@ async function callGeminiAPI(userState, systemPrompt, userPrompt) {
     content = content.replace(/(?:Я|это)?\s*PLEXY[,\s]+(эксперт|помощник|бот|специалист)[^\.]*?(?:Plexy Lab|PlexiLab)[.,]?\s*/gi, '');
     content = content.replace(/Я\s*—\s*PLEXY[,\s][^\.]*?(?:Plexy Lab|PlexiLab)[.,]?\s*/gi, '');
     content = content.replace(/Я\s*—\s*(?:большая языковая модель|модель|нейросеть)[^\.]*?(?:Google|OpenAI|Anthropic)[.,]?\s*/gi, '');
+    content = content.replace(/Я\s*(?:был[а]?|являюсь)[^\.]*?(?:разработан|создан|обучен)[^\.]*?(?:Google|OpenAI|Anthropic)[.,]?\s*/gi, '');
     
     return content;
   } catch (error) {
@@ -164,47 +201,42 @@ bot.on('photo', async (ctx) => {
       : 'Определи растение на фото, укажи его научное и обиходное название. Опиши основные характеристики и условия ухода. Не представляйся.';
     
     try {
-      // Запрос к Gemini API с изображением
-      const response = await axios.post(
-        `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-        {
-          contents: [
-            {
-              role: "user",
-              parts: [
-                {
-                  text: `Инструкции для тебя: ${systemPrompt}. Четко укажи научное и обиходное название растения в начале ответа.`
-                }
-              ]
-            },
-            {
-              role: "user",
-              parts: [
-                {
-                  text: caption || 'Определи это растение и расскажи о нем'
-                },
-                {
-                  inline_data: {
-                    mime_type: "image/jpeg",
-                    data: base64Image
-                  }
-                }
-              ]
-            }
-          ],
-          generationConfig: {
-            temperature: 0.4,
-            maxOutputTokens: 2048,
-          },
+      // Настройка модели
+      const model = genAI.getGenerativeModel({
+        model: "gemini-2.0-flash-thinking-exp-01-21",
+        generationConfig: {
+          temperature: 0.4,
+          maxOutputTokens: 2048,
+          responseMimeType: 'text/plain',
         }
-      );
+      });
       
-      let content = '';
-      if (response.data.candidates && response.data.candidates[0] && response.data.candidates[0].content) {
-        content = response.data.candidates[0].content.parts[0].text;
-      } else {
-        throw new Error('Invalid response from Gemini API');
-      }
+      // Сообщение с инструкциями
+      const instruction = `Инструкции для тебя: ${systemPrompt}. Четко укажи научное и обиходное название растения в начале ответа.`;
+      
+      // Обработка изображения
+      const mimeType = 'image/jpeg';
+      const imageParts = [
+        {
+          text: caption || 'Определи это растение и расскажи о нем'
+        },
+        {
+          inlineData: {
+            mimeType: mimeType,
+            data: base64Image
+          }
+        }
+      ];
+      
+      // Запрос к API
+      const result = await model.generateContent({
+        contents: [
+          { role: "user", parts: [{ text: instruction }] },
+          { role: "user", parts: imageParts }
+        ]
+      });
+      
+      let content = result.response.text();
       
       // Очистка контента от форматирования
       let cleanContent = content
@@ -217,13 +249,20 @@ bot.on('photo', async (ctx) => {
       const namePatterns = [
         /(?:Научное название|Научное наименование|Латинское название):\s*([^\.,:;\n]+)/i,
         /(?:Название|Наименование|Растение называется):\s*([^\.,:;\n]+)/i,
-        /(?:На фотографии|На фото)[^\.]*?(?:растение|цветок)\s+([^\.,:;\n]+)/i
+        /(?:На фотографии|На фото)[^\.]*?(?:растение|цветок)\s+([^\.,:;\n]+)/i,
+        /(?:растение|это)\s+([^\.,:;\n]+)/i
       ];
       
       for (const pattern of namePatterns) {
         const match = cleanContent.match(pattern);
         if (match && match[1]) {
-          userState.lastIdentifiedPlant = match[1].trim();
+          userState.lastIdentifiedPlant = match[1].trim()
+            .replace(/^\s+|\s+$/g, '')  // Trim whitespace
+            .replace(/[*_#`]/g, '')     // Remove markdown chars
+            .replace(/\(.*?\)/g, '')    // Remove content in parentheses
+            .replace(/\s{2,}/g, ' ');   // Replace multiple spaces with single space
+          
+          console.log("Identified plant:", userState.lastIdentifiedPlant);
           break;
         }
       }
@@ -246,6 +285,17 @@ bot.on('photo', async (ctx) => {
         content,
         { parse_mode: 'HTML' }
       );
+      
+      // Сохранение в историю разговора
+      userState.conversationHistory.push({
+        role: 'user',
+        content: caption || 'Определи это растение и расскажи о нем'
+      });
+      
+      userState.conversationHistory.push({
+        role: 'model',
+        content: content
+      });
       
       // Отправка клавиатуры с дополнительными действиями
       await ctx.reply(
@@ -280,7 +330,7 @@ bot.on('text', async (ctx) => {
     const buttonResponses = [
       '🌱 Определить растение', '🔍 Проблема с растением',
       '💊 Витамины и питание', '❓ Задать вопрос',
-      'ℹ️ Помощь', '📝 Оставить отзыв',
+      'ℹ️ Помощь', '📝 Оставить отзыв', '👨‍💻 Создатели',
       '« Назад', '« Главное меню',
       '💊 Информация о витаминах', '🥗 Здоровое питание',
       '🩺 Симптомы авитаминоза', '💡 Советы по питанию'
@@ -342,6 +392,19 @@ bot.on('text', async (ctx) => {
         return ctx.reply('Пожалуйста, напишите ваш отзыв или предложение по улучшению бота', {
           reply_markup: { keyboard: [['« Назад']], resize_keyboard: true }
         });
+      }
+      
+      if (userMessage === '👨‍💻 Создатели') {
+        return ctx.reply(
+          '<b>Создатели бота:</b>\n\n' +
+          '• <b>@qynon</b> - <i>Кенжеғали Нұрас</i>\n' +
+          '• <b>@iapmon</b> - <i>Сарсенбиғалиқызы Зере</i>\n\n' +
+          'Спасибо за использование нашего бота!',
+          { 
+            parse_mode: 'HTML',
+            reply_markup: mainMenuKeyboard()
+          }
+        );
       }
       
       if (userMessage === '💊 Витамины и питание') {
@@ -454,7 +517,16 @@ bot.on('text', async (ctx) => {
         lowerMessage.includes('что ты') || 
         lowerMessage.includes('какой ты') ||
         lowerMessage.includes('твой создатель')) {
-      return await ctx.reply('Я бот для определения растений и предоставления советов по уходу за ними.');
+      return await ctx.reply(
+        '<b>Создатели бота:</b>\n\n' +
+        '• <b>@qynon</b> - <i>Кенжеғали Нұрас</i>\n' +
+        '• <b>@iapmon</b> - <i>Сарсенбиғалиқызы Зере</i>\n\n' +
+        'Я бот для определения растений и предоставления советов по уходу за ними.',
+        { 
+          parse_mode: 'HTML',
+          reply_markup: mainMenuKeyboard()
+        }
+      );
     }
     
     if (lowerMessage.includes('как тебя зовут') || 
