@@ -84,63 +84,61 @@ const createPlantActionKeyboard = () => {
 // Функция для вызова Gemini API
 async function callGeminiAPI(userState, systemPrompt, userPrompt) {
   try {
-    // Настройки модели
-    const model = genAI.getGenerativeModel({
-      model: "gemini-2.0-flash-thinking-exp-01-21",
-      generationConfig: {
-        temperature: 0.7,
-        maxOutputTokens: 2048,
-        responseMimeType: 'text/plain',
+    // API запрос
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash-thinking-exp-01-21:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: `Инструкции для тебя: ${systemPrompt}. Отвечай по-русски, без представлений и приветствий.` }]
+          },
+          {
+            role: "user",
+            parts: Array.isArray(userPrompt) 
+              ? userPrompt 
+              : [{ text: userPrompt }]
+          }
+        ],
+        generationConfig: {
+          temperature: 0.7,
+          maxOutputTokens: 2048,
+        },
       }
-    });
+    );
     
-    // Подготовка системного промпта
-    const systemMessage = {
-      role: 'user',
-      parts: [{ text: `Инструкции для тебя: ${systemPrompt}. Отвечай по-русски, без представлений и приветствий.` }]
-    };
+    // Обработка ответа
+    let content = '';
+    if (response.data && response.data.candidates && response.data.candidates[0] && response.data.candidates[0].content) {
+      content = response.data.candidates[0].content.parts[0].text;
+    } else {
+      throw new Error('Invalid response from Gemini API');
+    }
     
-    // Подготовка истории чата
-    const chatHistory = [];
-    if (userState.conversationHistory && userState.conversationHistory.length > 0) {
-      const recentHistory = userState.conversationHistory.slice(-5);
-      for (const msg of recentHistory) {
-        chatHistory.push({
-          role: msg.role,
-          parts: Array.isArray(msg.content) ? msg.content : [{ text: msg.content }]
+    // Сохранение в историю
+    if (userState) {
+      if (typeof userPrompt === 'string') {
+        if (!userState.conversationHistory) {
+          userState.conversationHistory = [];
+        }
+        userState.conversationHistory.push({
+          role: 'user',
+          content: userPrompt
         });
       }
-    }
-    
-    // Подготовка пользовательского сообщения
-    const userMessage = {
-      role: 'user',
-      parts: Array.isArray(userPrompt) ? userPrompt : [{ text: userPrompt }]
-    };
-    
-    // Объединение сообщений
-    const messages = [systemMessage, ...chatHistory, userMessage];
-    
-    // Вызов API
-    const result = await model.generateContent(messages);
-    let content = result.response.text();
-    
-    // Добавление в историю чата
-    if (typeof userPrompt === 'string') {
+      
+      if (!userState.conversationHistory) {
+        userState.conversationHistory = [];
+      }
       userState.conversationHistory.push({
-        role: 'user',
-        content: userPrompt
+        role: 'model',
+        content: content
       });
-    }
-    
-    userState.conversationHistory.push({
-      role: 'model',
-      content: content
-    });
-    
-    // Ограничение длины истории
-    if (userState.conversationHistory.length > 10) {
-      userState.conversationHistory = userState.conversationHistory.slice(-10);
+      
+      // Ограничение длины истории
+      if (userState.conversationHistory.length > 10) {
+        userState.conversationHistory = userState.conversationHistory.slice(-10);
+      }
     }
     
     // Обработка форматирования
@@ -201,42 +199,47 @@ bot.on('photo', async (ctx) => {
       : 'Определи растение на фото, укажи его научное и обиходное название. Опиши основные характеристики и условия ухода. Не представляйся.';
     
     try {
-      // Настройка модели
-      const model = genAI.getGenerativeModel({
-        model: "gemini-2.0-flash-thinking-exp-01-21",
-        generationConfig: {
-          temperature: 0.4,
-          maxOutputTokens: 2048,
-          responseMimeType: 'text/plain',
-        }
-      });
-      
-      // Сообщение с инструкциями
-      const instruction = `Инструкции для тебя: ${systemPrompt}. Четко укажи научное и обиходное название растения в начале ответа.`;
-      
-      // Обработка изображения
-      const mimeType = 'image/jpeg';
-      const imageParts = [
+      // Запрос к Gemini API с изображением
+      const response = await axios.post(
+        `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash-thinking-exp-01-21:generateContent?key=${GEMINI_API_KEY}`,
         {
-          text: caption || 'Определи это растение и расскажи о нем'
-        },
-        {
-          inlineData: {
-            mimeType: mimeType,
-            data: base64Image
-          }
+          contents: [
+            {
+              role: "user",
+              parts: [
+                {
+                  text: `Инструкции для тебя: ${systemPrompt}. Четко укажи научное и обиходное название растения в начале ответа.`
+                }
+              ]
+            },
+            {
+              role: "user",
+              parts: [
+                {
+                  text: caption || 'Определи это растение и расскажи о нем'
+                },
+                {
+                  inline_data: {
+                    mime_type: "image/jpeg",
+                    data: base64Image
+                  }
+                }
+              ]
+            }
+          ],
+          generationConfig: {
+            temperature: 0.4,
+            maxOutputTokens: 2048,
+          },
         }
-      ];
+      );
       
-      // Запрос к API
-      const result = await model.generateContent({
-        contents: [
-          { role: "user", parts: [{ text: instruction }] },
-          { role: "user", parts: imageParts }
-        ]
-      });
-      
-      let content = result.response.text();
+      let content = '';
+      if (response.data && response.data.candidates && response.data.candidates[0] && response.data.candidates[0].content) {
+        content = response.data.candidates[0].content.parts[0].text;
+      } else {
+        throw new Error('Invalid response from Gemini API');
+      }
       
       // Очистка контента от форматирования
       let cleanContent = content
