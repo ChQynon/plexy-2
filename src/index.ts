@@ -78,32 +78,42 @@ async function callGeminiAPI(userState: UserState, systemPrompt: string, userPro
     const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "AIzaSyA3WOrYYhw6FnePJX3EANcmwH6OvkZW9IE";
     
     // Import the GoogleGenAI library
-    const { GoogleGenAI } = require('@google/genai');
+    const { GoogleGenerativeAI } = require('@google/genai');
     
     // Initialize the API client
-    const genAI = new GoogleGenAI(GEMINI_API_KEY);
+    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
     
-    // Create a conversation
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-thinking-exp-01-21" });
+    // Create a conversation with the gemini-1.5-flash model
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     
-    // Prepare the prompt
+    // Create the chat history from user state
+    const history = userState.conversationHistory.slice(-5).map(msg => ({
+      role: msg.role === 'user' ? 'user' : 'model',
+      parts: [{ text: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content) }]
+    }));
+    
+    // Prepare the prompt with system instructions
     const prompt = `Инструкции для тебя: ${systemPrompt}. Отвечай по-русски, без представлений и упоминаний, что ты PLEXY от Plexy Lab. Просто давай информацию без вступлений.`;
     
-    // Prepare the chat
+    // Create the chat session
     const chat = model.startChat({
-      history: userState.conversationHistory.map(msg => ({
-        role: msg.role,
-        parts: [{ text: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content) }]
-      })).slice(-5)
+      history: history,
+      generationConfig: {
+        temperature: 0.7,
+        topK: 40,
+        topP: 0.95,
+        maxOutputTokens: 2048,
+      }
     });
     
-    // Generate content
-    const result = await chat.sendMessage(Array.isArray(userPrompt) 
-      ? [{ text: prompt }, ...userPrompt]
-      : [{ text: prompt }, { text: userPrompt }]
+    // Send the message
+    const result = await chat.sendMessage(
+      Array.isArray(userPrompt) 
+        ? [prompt, ...userPrompt] 
+        : [prompt, userPrompt]
     );
     
-    // Extract the response text
+    // Get the response text
     let content = result.response.text();
     
     // Add to conversation history if required
@@ -621,44 +631,34 @@ bot.on('photo', async (ctx) => {
       const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "AIzaSyA3WOrYYhw6FnePJX3EANcmwH6OvkZW9IE";
       
       // Import required libraries
-      const { GoogleGenAI } = require('@google/genai');
-      const mime = require('mime');
+      const { GoogleGenerativeAI } = require('@google/genai');
       
       // Initialize the API client
-      const genAI = new GoogleGenAI(GEMINI_API_KEY);
+      const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
       
       // Get the generative model
-      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-thinking-exp-01-21" });
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
       
-      // Create the prompt parts with the image
-      const imageParts = [
-        {
-          text: `Инструкции для тебя: ${systemPrompt}. Отвечай по-русски, без вступлений, приветствий и представлений. Давай содержательную информацию сразу. Четко укажи научное и обиходное название растения в начале ответа.`
-        },
-        {
-          text: caption || 'Определи это растение и расскажи о нем'
-        },
-        {
-          inlineData: {
-            mimeType: "image/jpeg",
-            data: base64Image
-          }
+      // Create prompt including system instruction
+      const prompt = `${systemPrompt}. Отвечай по-русски, без вступлений, приветствий и представлений. Давай содержательную информацию сразу. Четко укажи научное и обиходное название растения в начале ответа.`;
+      
+      // Prepare image for the model (mime type must be explicitly set)
+      const imagePart = {
+        inlineData: {
+          data: base64Image,
+          mimeType: "image/jpeg"
         }
-      ];
+      };
       
-      // Generate content
-      const result = await model.generateContent({
-        contents: [{ role: "user", parts: imageParts }],
-        generationConfig: {
-          temperature: 0.4,
-          topK: 32,
-          topP: 0.95,
-          maxOutputTokens: 2048,
-        }
-      });
+      // Generate content with image
+      const result = await model.generateContent([
+        prompt,
+        caption || 'Определи это растение и расскажи о нем',
+        imagePart
+      ]);
       
-      // Get the response
-      const response = result.response;
+      // Get the response text
+      const response = await result.response;
       let content = response.text();
       
       // Clean up the content first to remove formatting that might interfere with extraction
